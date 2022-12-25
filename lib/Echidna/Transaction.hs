@@ -1,8 +1,7 @@
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE GADTs #-}
 
 module Echidna.Transaction where
-
-import Prelude hiding (Word)
 
 import Control.Lens
 import Control.Monad (join, liftM2)
@@ -14,17 +13,16 @@ import Data.List.NonEmpty qualified as NE
 import Data.Has (Has(..))
 import Data.HashMap.Strict qualified as M
 import Data.Map (Map, toList)
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromJust)
 import Data.Vector qualified as V
 import EVM hiding (value)
 import EVM.ABI (abiValueType)
-import EVM.Symbolic (litWord, litAddr)
-import EVM.Types (Addr, Buffer(..), Word(..), w256, w256lit, SymWord)
+import EVM.Types (Expr(ConcreteBuf,Lit,Address), Addr, W256)
+import qualified EVM.Expr as Expr
 
 import Echidna.ABI
 import Echidna.Types.Random
 import Echidna.Orphans.JSON ()
-import Echidna.Types.Buffer (viewBuffer)
 import Echidna.Types.Signature (SignatureMap, SolCall, ContractA, FunctionHash, BytecodeMemo, lookupBytecodeMetadata)
 import Echidna.Types.Tx
 import Echidna.Types.World (World(..))
@@ -63,19 +61,19 @@ genTxM memo m = do
   pure $ Tx (SolCall c') s' (fst r') g gp v' (level t')
   where
     toContractA :: SignatureMap -> (Addr, Contract) -> Maybe ContractA
-    toContractA mm (addr, c) = do
-      bc <- viewBuffer $ c ^. bytecode
-      let metadata = lookupBytecodeMetadata memo bc
-      (addr,) <$> M.lookup metadata mm
+    toContractA mm (addr, c) =
+      let ConcreteBuf bc = c ^. bytecode
+          metadata = lookupBytecodeMetadata memo bc
+      in (addr,) <$> M.lookup metadata mm
 
-genDelay :: MonadRandom m => Word -> [Integer] -> m Word
+genDelay :: MonadRandom m => W256 -> [W256] -> m W256
 genDelay mv ds = do
   let ds' = map (`mod` (fromIntegral mv + 1)) ds
   g <- oftenUsually randValue $ rElem (0 NE.:| ds')
-  w256 . fromIntegral <$> g
-  where randValue = getRandomR (1 :: Integer, fromIntegral mv)
+  fromIntegral g
+  where randValue = getRandomR (1 :: W256, mv)
 
-genValue :: MonadRandom m => Word -> [Integer] -> [FunctionHash] -> SolCall -> m Word
+genValue :: MonadRandom m => W256 -> [W256] -> [FunctionHash] -> SolCall -> m W256
 genValue mv ds ps sc =
   if sig `elem` ps then do
     let ds' = map (`mod` (fromIntegral mv + 1)) ds
@@ -84,7 +82,7 @@ genValue mv ds ps sc =
   else do
     g <- usuallyVeryRarely (pure 0) randValue -- once in a while, this will generate value in a non-payable function
     fromIntegral <$> g
-  where randValue = getRandomR (0 :: Integer, fromIntegral mv)
+  where randValue = getRandomR (0 :: W256, fromIntegral mv)
         sig = (hashSig . encodeSig . signatureCall) sc
 
 -- | Check if a 'Transaction' is as \"small\" (simple) as possible (using ad-hoc heuristics).
@@ -101,7 +99,8 @@ removeCallTx (Tx _ _ r _ _ _ d) = Tx NoCall 0 r 0 0 0 d
 -- | Given a 'Transaction', generate a random \"smaller\" 'Transaction', preserving origin,
 -- destination, value, and call signature.
 shrinkTx :: MonadRandom m => Tx -> m Tx
-shrinkTx tx'@(Tx c _ _ _ gp (C _ v) (C _ t, C _ b)) = let
+shrinkTx = undefined
+{-shrinkTx tx'@(Tx c _ _ _ gp (C _ v) (C _ t, C _ b)) = let
   c' = case c of
          SolCall sc -> SolCall <$> shrinkAbiCall sc
          _ -> pure c
@@ -115,6 +114,7 @@ shrinkTx tx'@(Tx c _ _ _ gp (C _ v) (C _ t, C _ b)) = let
     , set delay     <$> fmap level (liftM2 (,) (lower t) (lower b))
     ]
   in join $ usuallyRarely (join (uniform possibilities) <*> pure tx') (pure $ removeCallTx tx')
+  -}
 
 mutateTx :: (MonadRandom m) => Tx -> m Tx
 mutateTx t@(Tx (SolCall c) _ _ _ _ _ _) = do f <- oftenUsually skip mutate
@@ -139,20 +139,17 @@ liftSH = stateST . runState . zoom hasLens
 setupTx :: (MonadState x m, Has VM x) => Tx -> m ()
 setupTx (Tx NoCall _ r _ _ _ (t, b)) = liftSH . sequence_ $
   [ state . pc .= 0, state . stack .= mempty, state . memory .= mempty
-  , block . timestamp += litWord t, block . number += b, loadContract r]
+  , block . timestamp += Lit t, block . number += b, loadContract r]
 
 setupTx (Tx c s r g gp v (t, b)) = liftSH . sequence_ $
   [ result .= Nothing, state . pc .= 0, state . stack .= mempty, state . memory .= mempty, state . gas .= g
-  , tx . gasprice .= gp, tx . origin .= s, state . caller .= litAddr s, state . callvalue .= litWord v
-  , block . timestamp += litWord t, block . number += b, setup] where
+  , tx . gasprice .= gp, tx . origin .= s, state . caller .= Address (fromIntegral s), state . callvalue .= Lit v
+  , block . timestamp += Lit t, block . number += b, setup] where
     setup = case c of
-      SolCreate bc   -> assign (env . contracts . at r) (Just $ initialContract (InitCode (ConcreteBuffer bc)) & set balance v) >> loadContract r >> state . code .= ConcreteBuffer bc
-      SolCall cd     -> incrementBalance >> loadContract r >> state . calldata .= concreteCalldata (encode cd)
-      SolCalldata cd -> incrementBalance >> loadContract r >> state . calldata .= concreteCalldata cd
+      SolCreate bc   -> assign (env . contracts . at r) (Just $ initialContract (InitCode bc mempty) & set balance v) >> loadContract r >> state . code .= RuntimeCode (fromJust (Expr.toList (ConcreteBuf bc)))
+      SolCall cd     -> incrementBalance >> loadContract r >> state . calldata .= ConcreteBuf (encode cd)
+      SolCalldata cd -> incrementBalance >> loadContract r >> state . calldata .= ConcreteBuf cd
       NoCall         -> error "NoCall"
     incrementBalance = (env . contracts . ix r . balance) += v
     encode (n, vs) = abiCalldata
       (encodeSig (n, abiValueType <$> vs)) $ V.fromList vs
-
-concreteCalldata :: BS.ByteString -> (Buffer, SymWord)
-concreteCalldata cd = (ConcreteBuffer cd, w256lit . fromIntegral . BS.length $ cd)

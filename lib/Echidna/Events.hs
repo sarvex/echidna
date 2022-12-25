@@ -1,4 +1,5 @@
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE GADTs #-}
 
 module Echidna.Events where
 
@@ -14,10 +15,10 @@ import Control.Lens
 
 import EVM
 import EVM.ABI (Event(..), Indexed(..), decodeAbiValue, AbiType(AbiUIntType, AbiTupleType, AbiStringType))
-import EVM.Concrete (wordValue)
+--import EVM.Concrete (wordValue)
 import EVM.Dapp
-import EVM.Format (showValues, showError, contractNamePart)
-import EVM.Types (W256, maybeLitWord)
+import EVM.Format (contractNamePart)
+import EVM.Types (Expr(Lit,ConcreteBuf,LogEntry), W256, maybeLitWord)
 import EVM.Solidity (contractName)
 
 type EventMap = M.Map W256 Event
@@ -37,27 +38,28 @@ extractEvents decodeErrors dappInfo' vm =
       forest = traceForest vm
       showTrace trace =
         let ?context = DappContext { _contextInfo = dappInfo', _contextEnv = vm ^?! EVM.env . EVM.contracts } in
-        let codehash' = trace ^. traceContract . codehash
+        let Lit codehash' = trace ^. traceContract . codehash
             maybeContractName = maybeContractNameFromCodeHash codehash'
         in
         case trace ^. traceData of
-          EventTrace (Log addr bytes topics) ->
+          EventTrace addr bytes topics ->
             case maybeLitWord =<< listToMaybe topics of
               Nothing   -> []
-              Just word -> case M.lookup (wordValue word) eventMap of
+              Just word -> case M.lookup (word) eventMap of
                              Just (Event name _ types) ->
                                -- TODO this is where indexed types are filtered out
                                -- they are filtered out for a reason as they only contain
                                -- the topic hash which is printed super verbose by dapptools
                                [name <>
-                                showValues [t | (_, t, NotIndexed) <- types] bytes <>
+                                -- showValues [t | (_, t, NotIndexed) <- types] bytes <>
                                 pack " from: " <>
                                 maybe mempty (\ x -> x <> pack "@") maybeContractName <>
                                 pack (show addr)]
                              Nothing -> [pack $ show word]
           ErrorTrace e ->
             case e of
-              Revert out -> ["merror " <> "Revert " <> showError out <> maybe mempty (\ x -> pack " from: " <> x) maybeContractName]
+              --Revert out -> ["merror " <> "Revert " <> showError out <> maybe mempty (\ x -> pack " from: " <> x) maybeContractName]
+              Revert out -> ["merror " <> "Revert " <> maybe mempty (\ x -> pack " from: " <> x) maybeContractName]
               _ -> ["merror " <> pack (show e)]
 
           _ -> []
@@ -67,7 +69,7 @@ extractEvents decodeErrors dappInfo' vm =
 decodeRevert :: Bool -> VM -> Events
 decodeRevert decodeErrors vm =
   case vm ^. result of
-    Just (VMFailure (Revert bs)) -> decodeRevertMsg decodeErrors bs
+    Just (VMFailure (Revert (ConcreteBuf bs))) -> decodeRevertMsg decodeErrors bs
     _                            -> []
 
 decodeRevertMsg :: Bool -> BS.ByteString -> Events
