@@ -87,7 +87,7 @@ runContract f mc cfg = do
   let dappInfo' = dappInfo "/" solcByName sc
   let env = Env { cfg = cfg, dapp = dappInfo' }
   -- start ui and run tests
-  runReaderT (campaign (pure ()) v w ts (Just d) txs) env
+  runReaderT (campaign (pure False) v w ts (Just d) txs) env
 
 testContract :: FilePath -> Maybe FilePath -> [(String, Campaign -> Bool)] -> TestTree
 testContract fp cfg = testContract' fp Nothing Nothing cfg True

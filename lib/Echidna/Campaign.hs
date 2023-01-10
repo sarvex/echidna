@@ -5,7 +5,7 @@
 module Echidna.Campaign where
 
 import Control.Lens
-import Control.Monad (replicateM, when, unless)
+import Control.Monad (replicateM, when, unless, void)
 import Control.Monad.Catch (MonadCatch(..), MonadThrow(..))
 import Control.Monad.Random.Strict (MonadRandom, RandT, evalRandT)
 import Control.Monad.Reader.Class (MonadReader)
@@ -249,7 +249,7 @@ callseq ic v w ql = do
 -- to generate calls with. Return the 'Campaign' state once we can't solve or shrink anything.
 campaign
   :: (MonadIO m, MonadCatch m, MonadRandom m, MonadReader Env m)
-  => StateT Campaign m a -- ^ Callback to run after each state update (for instrumentation)
+  => StateT Campaign m Bool -- ^ Callback to run after each state update (for instrumentation)
   -> VM                  -- ^ Initial VM state
   -> World               -- ^ Initial world state
   -> [EchidnaTest]       -- ^ Tests to evaluate
@@ -269,12 +269,16 @@ campaign u vm w ts d txs = do
     -- "mapMaybe ..." is to get a list of all contracts
     memo        = makeBytecodeMemo . mapMaybe (viewBuffer . (^. bytecode)) . elems $ vm._env._contracts
     runCampaign = gets (fmap (.testState) . (._tests)) >>= update
+    step = do
+      runUpdate (shrinkTest vm)
+      stop <- lift u -- callback can instruct the campaign to stop running
+      unless stop runCampaign
     update c    = do
       let ic = (length txs, txs)
       CampaignConf{_testLimit, _stopOnFail, _seqLen, _shrinkLimit} <- asks (.cfg._cConf)
       Campaign{_ncallseqs} <- get
       if | _stopOnFail && any (\case Solved -> True; Failed _ -> True; _ -> False) c ->
-           lift u
+           void $ lift u
          | any (\case Open  n   -> n < _testLimit; _ -> False) c ->
            callseq ic vm w _seqLen >> step
          | any (\case Large n   -> n < _shrinkLimit; _ -> False) c ->
@@ -282,5 +286,4 @@ campaign u vm w ts d txs = do
          | null c && (_seqLen * _ncallseqs) < _testLimit ->
            callseq ic vm w _seqLen >> step
          | otherwise ->
-           lift u
-    step = runUpdate (shrinkTest vm) >> lift u >> runCampaign
+           void $ lift u
