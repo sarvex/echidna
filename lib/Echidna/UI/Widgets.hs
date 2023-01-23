@@ -22,7 +22,7 @@ import Echidna.Types.Tx (Tx(..), TxResult(..))
 import Echidna.UI.Report
 import Echidna.Types.Config
 
-data UIState = Uninitialized | Running | Timedout
+data UIState = Uninitialized | Running | Timedout | Crashed String
 
 attrs :: A.AttrMap
 attrs = A.attrMap (V.white `on` V.black)
@@ -32,6 +32,7 @@ attrs = A.attrMap (V.white `on` V.black)
   , (attrName "tx", fg V.brightWhite)
   , (attrName "working", fg V.brightBlue)
   , (attrName "success", fg V.brightGreen)
+  , (attrName "error", fg V.red)
   ]
 
 data Name =
@@ -45,25 +46,35 @@ campaignStatus :: MonadReader EConfig m
 campaignStatus (c@Campaign{_tests, _coverage, _ncallseqs}, uiState) = do
   done <- isDone c
   case (uiState, done) of
-    (Uninitialized, _) -> pure $ mainbox (padLeft (Pad 1) $ str "Starting up, please wait...") emptyWidget
-    (Timedout, _)      -> mainbox <$> testsWidget _tests <*> pure (str "Timed out, C-c or esc to exit")
-    (_, True)          -> mainbox <$> testsWidget _tests <*> pure (str "Campaign complete, C-c or esc to exit")
-    _                  -> mainbox <$> testsWidget _tests <*> pure emptyWidget
+    (Uninitialized, _) ->
+      pure $ mainbox (padLeft (Pad 1) $ str "Starting up, please wait...") emptyWidget
+    (Crashed e, _) ->
+      pure $ mainbox (padLeft (Pad 1) $
+        withAttr (attrName "error") $ str $ formatCrashReport e) emptyWidget
+    (Timedout, _) ->
+      mainboxTests (str "Timed out, C-c or esc to exit")
+    (_, True) ->
+      mainboxTests (str "Campaign complete, C-c or esc to exit")
+    _ ->
+      mainboxTests emptyWidget
   where
+    mainboxTests underneath = do
+      t <- testsWidget _tests
+      pure $ mainbox (summaryWidget c <=> hBorderWithLabel (str "Tests") <=> t) underneath
+
     mainbox :: Widget Name -> Widget Name -> Widget Name
     mainbox inner underneath =
-      padTop (Pad 1) $ hCenter $ hLimit 120 $
+      padTop (Pad 1) $ hCenter $ hLimit 200 $
       wrapInner inner
       <=>
       hCenter underneath
-    wrapInner inner =
-      borderWithLabel (withAttr (attrName "bold") $ str title) $
-      summaryWidget c
-      <=>
-      hBorderWithLabel (str "Tests")
-      <=>
-      inner
+    wrapInner = borderWithLabel (withAttr (attrName "bold") $ str title)
     title = "Echidna " ++ showVersion Paths_echidna.version
+
+formatCrashReport :: String -> String
+formatCrashReport e =
+  "Echidna crashed with an error:\n\n" <>
+  e
 
 summaryWidget :: Campaign -> Widget Name
 summaryWidget c =
