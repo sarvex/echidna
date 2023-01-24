@@ -5,11 +5,8 @@ import Control.Arrow (first)
 import Control.Monad (liftM2, when, unless, forM_)
 import Control.Monad.Catch (MonadThrow(..))
 import Control.Monad.Extra (whenM)
-import Control.Monad.IO.Class (MonadIO(..))
-import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (execStateT)
 import Data.Foldable (toList)
-import Data.Has (Has(..))
 import Data.HashMap.Strict qualified as M
 import Data.List (find, partition, isSuffixOf, (\\))
 import Data.List.NonEmpty qualified as NE
@@ -45,6 +42,8 @@ import Echidna.Types.Solidity hiding (deployBytecodes, deployContracts)
 import Echidna.Types.Test (EchidnaTest(..))
 import Echidna.Types.Tx (basicTx, createTxWithValue, unlimitedGasPerBlock, initialTimestamp, initialBlockNumber)
 import Echidna.Types.World (World(..))
+import qualified Data.Set as Set
+import Data.Set (Set)
 
 -- | Given a list of source caches (SourceCaches) and an optional contract name,
 -- select one that includes that contract (if possible). Otherwise, use the first source
@@ -72,33 +71,30 @@ readSolcBatch d = do
 -- | Given a list of files, use its extenstion to check if it is a precompiled
 -- contract or try to compile it and get a list of its contracts and a list of source cache, throwing
 -- exceptions if necessary.
-contracts :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x) => NE.NonEmpty FilePath -> m ([SolcContract], SourceCaches)
-contracts fp = let usual = ["--solc-disable-warnings", "--export-format", "solc"] in do
-  mp  <- liftIO $ findExecutable "crytic-compile"
+contracts :: SolConf -> NE.NonEmpty FilePath -> IO ([SolcContract], SourceCaches)
+contracts solConf fp = let usual = ["--solc-disable-warnings", "--export-format", "solc"] in do
+  mp  <- findExecutable "crytic-compile"
   case mp of
    Nothing -> throwM NoCryticCompile
    Just path -> do
-    a  <- view (hasLens . solcArgs)
-    q  <- view (hasLens . quiet)
-    ls <- view (hasLens . solcLibs)
-    c  <- view (hasLens . cryticArgs)
-    let solargs = a ++ linkLibraries ls & (usual ++) .
+    let solargs = solConf._solcArgs ++ linkLibraries solConf._solcLibs & (usual ++) .
                   (\sa -> if null sa then [] else ["--solc-args", sa])
-        compileOne :: (MonadIO m, MonadThrow m) => FilePath -> m ([SolcContract], SourceCaches)
+        compileOne :: FilePath -> IO ([SolcContract], SourceCaches)
         compileOne x = do
-          mSolc <- liftIO $ do
-            stderr <- if q then UseHandle <$> openFile "/dev/null" WriteMode else pure Inherit
-            (ec, out, err) <- readCreateProcessWithExitCode (proc path $ (c ++ solargs) |> x) {std_err = stderr} ""
+          mSolc <- do
+            stderr <- if solConf._quiet then UseHandle <$> openFile "/dev/null" WriteMode else pure Inherit
+            (ec, out, err) <- readCreateProcessWithExitCode (proc path $ (solConf._cryticArgs ++ solargs) |> x) {std_err = stderr} ""
             case ec of
               ExitSuccess -> readSolcBatch "crytic-export"
               ExitFailure _ -> throwM $ CompileFailure out err
 
           maybe (throwM SolcReadFailure) (pure . first toList) mSolc
     -- clean up previous artifacts
-    liftIO $ removeJsonFiles "crytic-export"
+    removeJsonFiles "crytic-export"
     cps <- mapM compileOne fp
     let (cs, ss) = NE.unzip cps
-    when (length ss > 1) $ liftIO $ putStrLn "WARNING: more than one SourceCaches was found after compile. Only the first one will be used."
+    when (length ss > 1) $
+      putStrLn "WARNING: more than one SourceCaches was found after compile. Only the first one will be used."
     pure (concat cs, NE.head ss)
 
 removeJsonFiles :: FilePath -> IO ()
@@ -110,17 +106,18 @@ removeJsonFiles dir =
         let path = dir </> file
         whenM (doesFileExist path) $ removeFile path
 
-addresses :: (MonadReader x m, Has SolConf x) => m (NE.NonEmpty AbiValue)
-addresses = do
-  SolConf{_contractAddr = ca, _deployer = d, _sender = ads} <- view hasLens
-  pure $ AbiAddress . fromIntegral <$> NE.nub (join ads [ca, d, 0x0])
-  where join (f NE.:| r) l = f NE.:| (r ++ l)
+addresses :: SolConf -> Set AbiValue
+addresses SolConf{_contractAddr, _deployer, _sender} = do
+  Set.map AbiAddress $ Set.union _sender (Set.fromList [_contractAddr, _deployer, 0x0])
 
-populateAddresses :: [Addr] -> Integer -> VM -> VM
-populateAddresses []     _ vm = vm
-populateAddresses (a:as) b vm = if deployed then populateAddresses as b vm else populateAddresses as b (vm & set (env . EVM.contracts . at a) (Just account))
-  where account   = initialContract (RuntimeCode (ConcreteRuntimeCode mempty)) & set nonce 0 & set balance (fromInteger b)
-        deployed = a `member` (vm ^. env . EVM.contracts)
+populateAddresses :: Set Addr -> Integer -> VM -> VM
+populateAddresses addrs b vm =
+  Set.foldl' (\vm' addr ->
+    if deployed addr then vm'
+    else vm' & set (env . EVM.contracts . at addr) (Just account)
+ ) vm addrs
+  where account = initialContract (RuntimeCode (ConcreteRuntimeCode mempty)) & set nonce 0 & set balance (fromInteger b)
+        deployed addr = addr `member` vm._env._contracts
 
 -- | Address to load the first library
 addrLibrary :: Addr
@@ -149,49 +146,46 @@ filterMethodsWithArgs ms = case NE.filter (\(_, xs) -> not $ null xs) ms of
                              fs -> NE.fromList fs
 
 abiOf :: Text -> SolcContract -> NE.NonEmpty SolSignature
-abiOf pref cc = fallback NE.:| filter (not . isPrefixOf pref . fst) (elems (cc ^. abiMap) <&> \m -> (m ^. methodName, m ^.. methodInputs . traverse . _2))
+abiOf pref cc = fallback NE.:| filter (not . isPrefixOf pref . fst) (elems (cc._abiMap) <&> \m -> (m._methodName, m ^.. methodInputs . traverse . _2))
 
 -- | Given an optional contract name and a list of 'SolcContract's, try to load the specified
 -- contract, or, if not provided, the first contract in the list, into a 'VM' usable for Echidna
 -- testing and extract an ABI and list of tests. Throws exceptions if anything returned doesn't look
 -- usable for Echidna. NOTE: Contract names passed to this function should be prefixed by the
 -- filename their code is in, plus a colon.
-loadSpecified :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x, MonadFail m)
-              => Maybe Text -> [SolcContract] -> m (VM, EventMap, NE.NonEmpty SolSignature, [Text], SignatureMap)
-loadSpecified name cs = do
+loadSpecified :: SolConf -> Maybe Text -> [SolcContract] -> IO (VM, EventMap, NE.NonEmpty SolSignature, [Text], SignatureMap)
+loadSpecified solConf name cs = do
   -- Pick contract to load
   c <- choose cs name
-  q <- view (hasLens . quiet)
-  liftIO $ do
-    when (isNothing name && length cs > 1 && not q) $
-      putStrLn "Multiple contracts found, only analyzing the first"
-    unless q . putStrLn $ "Analyzing contract: " <> c ^. contractName . unpacked
+  when (isNothing name && length cs > 1 && not solConf._quiet) $
+    putStrLn "Multiple contracts found, only analyzing the first"
+  unless solConf._quiet . putStrLn $ "Analyzing contract: " <> c ^. contractName . unpacked
 
   -- Local variables
-  SolConf ca d ads bala balc mcs pref _ _ libs _ fp dpc dpb ma tm _ fs <- view hasLens
+  let SolConf ca d ads bala balc mcs pref _ _ libs _ fp dpc dpb ma tm _ fs = solConf
 
   -- generate the complete abi mapping
-  let bc = c ^. creationCode
-      abi = liftM2 (,) (view methodName) (fmap snd . view methodInputs) <$> toList (c ^. abiMap)
+  let bc = c._creationCode
+      abi = liftM2 (,) (view methodName) (fmap snd . view methodInputs) <$> toList (c._abiMap)
       con = view constructorInputs c
       (tests, funs) = partition (isPrefixOf pref . fst) abi
 
 
   -- Filter ABI according to the config options
-  let fabiOfc = if isDapptestMode tm then filterMethodsWithArgs (abiOf pref c) else filterMethods (c ^. contractName) fs $ abiOf pref c
+  let fabiOfc = if isDapptestMode tm then filterMethodsWithArgs (abiOf pref c) else filterMethods (c._contractName) fs $ abiOf pref c
   -- Filter again for dapptest tests or assertions checking if enabled
-  let neFuns = filterMethods (c ^. contractName) fs (fallback NE.:| funs)
+  let neFuns = filterMethods (c._contractName) fs (fallback NE.:| funs)
   -- Construct ABI mapping for World
-  let abiMapping = if ma then M.fromList $ cs <&> \cc -> (getBytecodeMetadata $ cc ^. runtimeCode,  filterMethods (cc ^. contractName) fs $ abiOf pref cc)
-                         else M.singleton (getBytecodeMetadata $ c ^. runtimeCode) fabiOfc
+  let abiMapping = if ma then M.fromList $ cs <&> \cc -> (getBytecodeMetadata cc._runtimeCode, filterMethods (cc._contractName) fs $ abiOf pref cc)
+                         else M.singleton (getBytecodeMetadata c._runtimeCode) fabiOfc
 
 
   -- Set up initial VM, either with chosen contract or Etheno initialization file
   -- need to use snd to add to ABI dict
   let vm = initialVM & block . gaslimit .~ fromInteger unlimitedGasPerBlock
                      & block . maxCodeSize .~ fromInteger mcs
-  blank' <- liftIO $ maybe (pure vm) loadEthenoBatch fp
-  let blank = populateAddresses (NE.toList ads |> d) bala blank'
+  blank' <- maybe (pure vm) loadEthenoBatch fp
+  let blank = populateAddresses (Set.insert d ads) bala blank'
 
   unless (null con || isJust fp) (throwM $ ConstructorArgs (show con))
   -- Select libraries
@@ -203,12 +197,12 @@ loadSpecified name cs = do
     $ throwM NoTests
   when (null abiMapping && isDapptestMode tm)                   -- < Dapptests checks
     $ throwM NoTests
-  when (bc == mempty) $ throwM (NoBytecode $ c ^. contractName) -- Bytecode check
+  when (bc == mempty) $ throwM (NoBytecode c._contractName) -- Bytecode check
   case find (not . null . snd) tests of
     Just (t,_) -> throwM $ TestArgsFound t                      -- Test args check
     Nothing    -> do
       -- dappinfo for debugging in case of failure
-      let di = dappInfo "/" (Map.fromList $ map (\x -> (x ^. contractName, x)) cs) mempty
+      let di = dappInfo "/" (Map.fromList $ map (\x -> (x._contractName, x)) cs) mempty
 
       -- library deployment
       vm0 <- deployContracts di (zip [addrLibrary ..] ls) d blank
@@ -229,9 +223,9 @@ loadSpecified name cs = do
       let transaction = execTx $ uncurry basicTx setUpFunction d ca (fromInteger unlimitedGasPerBlock) (0, 0)
       vm4 <- if isDapptestMode tm && setUpFunction `elem` abi then execStateT transaction vm3 else return vm3
 
-      case vm4 ^. result of
+      case vm4._result of
         Just (VMFailure _) -> throwM SetUpCallFailed
-        _                  -> return (vm4, unions $ map (view eventMap) cs, neFuns, fst <$> tests, abiMapping)
+        _                  -> return (vm4, unions $ map (view EVM.Solidity.eventMap) cs, neFuns, fst <$> tests, abiMapping)
 
   where choose []    _        = throwM NoContracts
         choose (c:_) Nothing  = return c
@@ -245,27 +239,25 @@ loadSpecified name cs = do
 -- the first contract in the file. Take said contract and return an initial VM state with it loaded,
 -- its ABI (as 'SolSignature's), and the names of its Echidna tests. NOTE: unlike 'loadSpecified',
 -- contract names passed here don't need the file they occur in specified.
-loadWithCryticCompile :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x, MonadFail m)
-                      => NE.NonEmpty FilePath -> Maybe Text -> m (VM, EventMap, NE.NonEmpty SolSignature, [Text], SignatureMap)
-loadWithCryticCompile fp name = contracts fp >>= \(cs, _) -> loadSpecified name cs
+loadWithCryticCompile :: SolConf -> NE.NonEmpty FilePath -> Maybe Text -> IO (VM, EventMap, NE.NonEmpty SolSignature, [Text], SignatureMap)
+loadWithCryticCompile solConf fp name = contracts solConf fp >>= \(cs, _) -> loadSpecified solConf name cs
 
 
 -- | Given the results of 'loadSolidity', assuming a single-contract test, get everything ready
 -- for running a 'Campaign' against the tests found.
-prepareForTest :: (MonadReader x m, Has SolConf x)
-               => (VM, EventMap, NE.NonEmpty SolSignature, [Text], SignatureMap)
+prepareForTest :: SolConf
+               -> (VM, EventMap, NE.NonEmpty SolSignature, [Text], SignatureMap)
                -> Maybe ContractName
                -> SlitherInfo
-               -> m (VM, World, [EchidnaTest])
-prepareForTest (vm, em, a, ts, m) c si = do
-  SolConf{ _sender = s, _testMode = tm, _testDestruction = td } <- view hasLens
-  let r = vm ^. state . contract
+               -> (VM, World, [EchidnaTest])
+prepareForTest SolConf{_sender, _testMode, _testDestruction} (vm, em, a, ts, m) c si = do
+  let r = vm._state._contract
       a' = NE.toList a
-      ps = filterResults c $ payableFunctions si
-      as = if isAssertionMode tm then filterResults c $ asserts si else []
-      cs = if isDapptestMode tm then [] else filterResults c (constantFunctions si) \\ as
-      (hm, lm) = prepareHashMaps cs as $ filterFallbacks c (fallbackDefined si) (receiveDefined si) m
-  pure (vm, World s hm lm ps em, createTests tm td ts r a')
+      ps = filterResults c si.payableFunctions
+      as = if isAssertionMode _testMode then filterResults c si.asserts else []
+      cs = if isDapptestMode _testMode then [] else filterResults c si.constantFunctions \\ as
+      (hm, lm) = prepareHashMaps cs as $ filterFallbacks c si.fallbackDefined si.receiveDefined m
+  (vm, World _sender hm lm ps em, createTests _testMode _testDestruction ts r a')
 
 
 filterFallbacks :: Maybe ContractName -> [ContractName] -> [ContractName] -> SignatureMap -> SignatureMap
@@ -276,14 +268,12 @@ filterFallbacks _ [] [] sm = M.map f sm
 filterFallbacks _ _ _ sm = sm
 
 -- this limited variant is used only in tests
-prepareForTest' :: (MonadReader x m, Has SolConf x)
-               => (VM, EventMap, NE.NonEmpty SolSignature, [Text], SignatureMap)
-               -> m (VM, World, [EchidnaTest])
-prepareForTest' (v, em, a, ts, _) = do
-  SolConf{ _sender = s, _testMode = tm } <- view hasLens
-  let r = v ^. state . contract
+prepareForTest' :: SolConf -> (VM, EventMap, NE.NonEmpty SolSignature, [Text], SignatureMap)
+               -> (VM, World, [EchidnaTest])
+prepareForTest' SolConf{_sender, _testMode} (v, em, a, ts, _) = do
+  let r = v._state._contract
       a' = NE.toList a
-  pure (v, World s M.empty Nothing [] em, createTests tm True ts r a')
+  (v, World _sender M.empty Nothing [] em, createTests _testMode True ts r a')
 
 prepareHashMaps :: [FunctionHash] -> [FunctionHash] -> SignatureMap -> (SignatureMap, Maybe SignatureMap)
 prepareHashMaps [] _  m = (m, Nothing)                                -- No constant functions detected
@@ -297,9 +287,10 @@ prepareHashMaps cs as m =
 
 -- | Basically loadSolidity, but prepares the results to be passed directly into
 -- a testing function.
-loadSolTests :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x, MonadFail m)
-             => NE.NonEmpty FilePath -> Maybe Text -> m (VM, World, [EchidnaTest])
-loadSolTests fp name = loadWithCryticCompile fp name >>= prepareForTest'
+loadSolTests :: SolConf -> NE.NonEmpty FilePath -> Maybe Text -> IO (VM, World, [EchidnaTest])
+loadSolTests solConf fp name = do
+  x <- loadWithCryticCompile solConf fp name
+  pure $ prepareForTest' solConf x
 
 mkLargeAbiInt :: Int -> AbiValue
 mkLargeAbiInt i = AbiInt i $ 2 ^ (i - 1) - 1
@@ -321,5 +312,5 @@ extremeConstants = concatMap (\i -> [mkSmallAbiInt i, mkLargeAbiInt i, mkLargeAb
 returnTypes :: [SolcContract] -> Text -> Maybe AbiType
 returnTypes cs t = do
   method <- find ((== t) . view methodName) $ concatMap (toList . view abiMap) cs
-  (_, abiType) <- listToMaybe $ method ^. methodOutput
+  (_, abiType) <- listToMaybe method._methodOutput
   pure abiType

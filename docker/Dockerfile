@@ -16,7 +16,7 @@ RUN curl -sSL https://get.haskellstack.org/ | sh
 COPY . /echidna/
 WORKDIR /echidna
 RUN .github/scripts/install-libff.sh
-RUN stack upgrade && stack setup && stack install --extra-include-dirs=/usr/local/include --extra-lib-dirs=/usr/local/lib
+RUN stack upgrade && stack setup && stack install --flag echidna:static --extra-include-dirs=/usr/local/include --extra-lib-dirs=/usr/local/lib
 
 
 FROM ubuntu:focal AS builder-python3
@@ -28,7 +28,7 @@ RUN apt-get update && \
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_NO_CACHE_DIR=1
 RUN python3 -m venv /venv && /venv/bin/pip3 install --no-cache --upgrade setuptools pip
-RUN /venv/bin/pip3 install --no-cache slither-analyzer solc-select
+RUN /venv/bin/pip3 install --no-cache slither-analyzer solc-select "crytic-compile @ https://github.com/crytic/crytic-compile/archive/53167f3f3d63b73916b1660312a53fd952f2e3dd.zip"
 
 
 FROM gcr.io/distroless/python3-debian11:nonroot AS final-distroless

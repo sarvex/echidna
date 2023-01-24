@@ -3,7 +3,7 @@ name: echidna
 author: Trail of Bits <echidna-dev@trailofbits.com>
 maintainer: Trail of Bits <echidna-dev@trailofbits.com>
 
-version: 2.0.4
+version: 2.0.5
 
 ghc-options: -Wall -fno-warn-orphans -O2 -threaded +RTS -N -RTS
 
@@ -15,8 +15,8 @@ dependencies:
   - brick
   - bytestring
   - containers
+  - data-bword
   - data-dword
-  - data-has
   - extra
   - directory
   - exceptions
@@ -52,6 +52,10 @@ language: GHC2021
 default-extensions:
   - LambdaCase
   - OverloadedStrings
+
+  - DuplicateRecordFields
+  - NoFieldSelectors
+  - OverloadedRecordDot
 
 library:
   source-dirs: lib/
@@ -103,4 +107,4 @@ flags:
   static:
     description: Pass -static to ghc when linking the stack binary.
     manual: true
-    default: true
+    default: false
