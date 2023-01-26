@@ -20,6 +20,7 @@ import Data.Map (Map, unionWith, (\\), elems, keys, lookup, insert, mapWithKey)
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Ord (comparing)
 import Data.Set qualified as DS
+import Data.Set qualified as Set
 import Data.Text (Text)
 import System.Random (mkStdGen)
 
@@ -43,7 +44,6 @@ import Echidna.Types.Signature (makeBytecodeMemo)
 import Echidna.Types.Tx (TxCall(..), Tx(..), getResult, call)
 import Echidna.Types.World (World)
 import Echidna.Mutator.Corpus
-import qualified Data.Set as Set
 import Echidna.Events (extractEvents)
 
 instance MonadThrow m => MonadThrow (RandT g m) where
@@ -136,7 +136,7 @@ updateGasInfo ((t, _):ts) tseq gi = updateGasInfo ts (t:tseq) gi
 
 -- | Execute a transaction, capturing the PC and codehash of each instruction executed, saving the
 -- transaction if it finds new coverage.
-execTxOptC :: (MonadIO m, MonadState (VM, Campaign) m, MonadThrow m) => Tx -> m (VMResult, Int)
+execTxOptC :: (MonadIO m, MonadReader Env m, MonadState (VM, Campaign) m, MonadThrow m) => Tx -> m (VMResult, Int)
 execTxOptC tx = do
   (vm, Campaign{_bcMemo, _coverage = oldCov}) <- get
   let cov = _2 . coverage
