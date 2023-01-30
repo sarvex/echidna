@@ -17,8 +17,8 @@ import Data.IORef (IORef)
 import Data.Map (Map)
 import EVM (Contract)
 
-data OperationMode = Interactive | NonInteractive OutputFormat deriving Show
-data OutputFormat = Text | JSON | None deriving Show
+data OperationMode = Interactive | NonInteractive OutputFormat deriving (Show, Eq)
+data OutputFormat = Text | JSON | None deriving (Show, Eq)
 data UIConf = UIConf { maxTime       :: Maybe Int
                      , operationMode :: OperationMode
                      }
@@ -56,6 +56,6 @@ data EConfigWithUsage = EConfigWithUsage {
 data Env = Env
   { cfg :: EConfig
   , dapp :: DappInfo
-  , fetchCacheContracts :: IORef (Map Addr Contract)
-  , fetchCacheSlots :: IORef (Map Addr (Map W256 W256))
+  , fetchContractCache :: IORef (Map Addr Contract)
+  , fetchSlotCache :: IORef (Map Addr (Map W256 W256))
   }

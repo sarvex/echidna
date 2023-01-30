@@ -209,37 +209,47 @@ loadSpecified conf name cs = do
     Nothing    -> do
       -- dappinfo for debugging in case of failure
       let di = dappInfo "/" (Map.fromList $ map (\x -> (x._contractName, x)) cs) mempty
+      -- TODO: move this to main, requires bigger refactor
       refContracts <- newIORef mempty
       refSlots <- newIORef mempty
-      let echidnaEnv = Env{ cfg = conf, dapp = di, fetchCacheContracts = refContracts, fetchCacheSlots = refSlots }
+      let echidnaEnv = Env{ cfg = conf
+                          , dapp = di
+                          , fetchContractCache = refContracts
+                          , fetchSlotCache = refSlots
+                          }
 
-      -- library deployment
-      vm0 <- runReaderT (deployContracts (zip [addrLibrary ..] ls) d blank) echidnaEnv
+      flip runReaderT echidnaEnv $ do
+        -- library deployment
+        vm0 <- deployContracts (zip [addrLibrary ..] ls) d blank
 
-      -- additional contract deployment (by name)
-      cs' <- mapM ((choose cs . Just) . T.pack . snd) dpc
-      vm1 <- runReaderT (deployContracts (zip (map fst dpc) cs') d vm0) echidnaEnv
+        -- additional contract deployment (by name)
+        cs' <- mapM ((choose cs . Just) . T.pack . snd) dpc
+        vm1 <- deployContracts (zip (map fst dpc) cs') d vm0
 
-      -- additional contract deployment (bytecode)
-      vm2 <- runReaderT (deployBytecodes dpb d vm1) echidnaEnv
+        -- additional contract deployment (bytecode)
+        vm2 <- deployBytecodes dpb d vm1
 
-      -- main contract deployment
-      let deployment = runReaderT (execTx $ createTxWithValue bc d ca (fromInteger unlimitedGasPerBlock) (fromInteger balc) (0, 0)) echidnaEnv
-      vm3 <- execStateT deployment vm2
-      when (isNothing $ currentContract vm3) (throwM $ DeploymentFailed ca $ T.unlines $ extractEvents True di vm3)
+        -- main contract deployment
+        let deployment = execTx $ createTxWithValue bc d ca (fromInteger unlimitedGasPerBlock) (fromInteger balc) (0, 0)
+        vm3 <- execStateT deployment vm2
+        when (isNothing $ currentContract vm3) $
+          throwM $ DeploymentFailed ca $ T.unlines $ extractEvents True di vm3
 
-      -- Run
-      let transaction = runReaderT (execTx $ uncurry basicTx setUpFunction d ca (fromInteger unlimitedGasPerBlock) (0, 0)) echidnaEnv
-      vm4 <- if isDapptestMode tm && setUpFunction `elem` abi then execStateT transaction vm3 else return vm3
+        -- Run
+        let transaction = execTx $ uncurry basicTx setUpFunction d ca (fromInteger unlimitedGasPerBlock) (0, 0)
+        vm4 <- if isDapptestMode tm && setUpFunction `elem` abi
+                  then execStateT transaction vm3
+                  else return vm3
 
-      case vm4._result of
-        Just (VMFailure _) -> throwM SetUpCallFailed
-        _                  -> return (vm4, unions $ map (view EVM.Solidity.eventMap) cs, neFuns, fst <$> tests, abiMapping)
+        case vm4._result of
+          Just (VMFailure _) -> throwM SetUpCallFailed
+          _ -> pure (vm4, unions $ map (view EVM.Solidity.eventMap) cs, neFuns, fst <$> tests, abiMapping)
 
-  where choose []    _        = throwM NoContracts
-        choose (c:_) Nothing  = return c
-        choose _     (Just n) = maybe (throwM $ ContractNotFound n) pure $
-                                      find (Data.Text.isSuffixOf (if T.any (== ':') n then n else ":" `append` n) . view contractName) cs
+  where choose [] _ = throwM NoContracts
+        choose (c:_) Nothing  = pure c
+        choose _     (Just n) =
+          maybe (throwM $ ContractNotFound n) pure $
+            find (Data.Text.isSuffixOf (if T.any (== ':') n then n else ":" `append` n) . view contractName) cs
         setUpFunction = ("setUp", [])
 
 

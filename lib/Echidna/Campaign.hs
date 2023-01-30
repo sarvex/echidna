@@ -9,14 +9,16 @@ import Control.Monad (replicateM, when, unless)
 import Control.Monad.Catch (MonadCatch(..), MonadThrow(..))
 import Control.Monad.Random.Strict (MonadRandom, RandT, evalRandT)
 import Control.Monad.Reader.Class (MonadReader)
-import Control.Monad.Reader (runReaderT, asks)
+import Control.Monad.Reader (runReaderT, asks, liftIO)
 import Control.Monad.State.Strict (MonadState(..), StateT(..), evalStateT, execStateT, gets, MonadIO)
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Random.Strict (liftCatch)
 import Data.Binary.Get (runGetOrFail)
 import Data.ByteString.Lazy qualified as LBS
 import Data.HashMap.Strict qualified as H
+import Data.IORef (readIORef)
 import Data.Map (Map, unionWith, (\\), elems, keys, lookup, insert, mapWithKey)
+import Data.Map qualified as Map
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Ord (comparing)
 import Data.Set qualified as DS
@@ -264,10 +266,10 @@ campaign u vm w ts d txs = do
       d' = fromMaybe defaultDict d
   execStateT
     (evalRandT runCampaign (mkStdGen effectiveSeed))
-    (Campaign ts c mempty effectiveGenDict False DS.empty 0 memo)
+    (Campaign ts c mempty effectiveGenDict False DS.empty 0 (memo vm._env._contracts))
   where
     -- "mapMaybe ..." is to get a list of all contracts
-    memo        = makeBytecodeMemo . mapMaybe (viewBuffer . (^. bytecode)) . elems $ vm._env._contracts
+    memo = makeBytecodeMemo . mapMaybe (viewBuffer . (^. bytecode)) . elems
     runCampaign = gets (fmap (.testState) . (._tests)) >>= update
     update c    = do
       let ic = (length txs, txs)
@@ -283,4 +285,9 @@ campaign u vm w ts d txs = do
            callseq ic vm w _seqLen >> step
          | otherwise ->
            lift u
-    step = runUpdate (shrinkTest vm) >> lift u >> runCampaign
+    step = updateMetadataCache >> runUpdate (shrinkTest vm) >> lift u >> runCampaign
+    -- TODO: this is temporary
+    updateMetadataCache = do
+      cacheRef <- asks (.fetchContractCache)
+      cache <- liftIO $ readIORef cacheRef
+      bcMemo %= Map.union (memo cache)

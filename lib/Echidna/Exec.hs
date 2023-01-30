@@ -33,7 +33,8 @@ import Echidna.Types.Buffer (viewBuffer)
 import Echidna.Types.Coverage (CoverageMap)
 import Echidna.Types.Signature (BytecodeMemo, lookupBytecodeMetadata)
 import Echidna.Types.Tx (TxCall(..), Tx, TxResult(..), call, dst, initialTimestamp, initialBlockNumber)
-import Echidna.Types.Config (Env(..))
+import Echidna.Types.Config (Env(..), EConfig(..), UIConf(..), OperationMode (..), OutputFormat (Text))
+import Control.Monad (when)
 
 -- | Broad categories of execution failures: reversions, illegal operations, and ???.
 data ErrorClass = RevertE | IllegalE | UnknownE
@@ -94,12 +95,15 @@ execTxWith l onErr executeTx tx = do
     -- the execution by recursively calling `runFully`.
     case getQuery vmResult of
       -- A previously unknown contract is required
-      Just (PleaseFetchContract addr continuation) -> do
-        cacheRef <- asks (.fetchCacheContracts)
+      Just q@(PleaseFetchContract addr continuation) -> do
+        cacheRef <- asks (.fetchContractCache)
         cache <- liftIO $ readIORef cacheRef
         case Map.lookup addr cache of
           Just contract -> l %= execState (continuation contract)
-          Nothing ->
+          Nothing -> do
+            -- TODO: temporary
+            operationMode <- asks (.cfg._uConf.operationMode)
+            when (operationMode == NonInteractive Text) $ liftIO $ print q
             getRpcUrl >>= \case
               Just rpcUrl -> do
                 rpcBlock <- getRpcBlock
@@ -119,12 +123,15 @@ execTxWith l onErr executeTx tx = do
         runFully -- resume execution
 
       -- A previously unknown slot is required
-      Just (PleaseFetchSlot addr slot continuation) -> do
-        cacheRef <- asks (.fetchCacheSlots)
+      Just q@(PleaseFetchSlot addr slot continuation) -> do
+        cacheRef <- asks (.fetchSlotCache)
         cache <- liftIO $ readIORef cacheRef
         case Map.lookup addr cache >>= Map.lookup slot of
           Just value -> l %= execState (continuation value)
           Nothing -> do
+            -- TODO: temporary
+            operationMode <- asks (.cfg._uConf.operationMode)
+            when (operationMode == NonInteractive Text) $ liftIO $ print q
             getRpcUrl >>= \case
               Just rpcUrl -> do
                 rpcBlock <- getRpcBlock
