@@ -46,11 +46,11 @@ getResultFromVM vm =
     Nothing -> error "getResultFromVM failed"
 
 createTest :: TestType -> EchidnaTest
-createTest m =  EchidnaTest (Open (-1)) m v [] Stop []
-                where v = case m of
-                           PropertyTest _ _     -> BoolValue True
-                           OptimizationTest _ _ -> IntValue minBound
-                           _                    -> NoValue
+createTest m = EchidnaTest (Open 0) m v [] Stop []
+  where v = case m of
+              PropertyTest _ _     -> BoolValue True
+              OptimizationTest _ _ -> IntValue minBound
+              _                    -> NoValue
 
 validateTestModeError :: String
 validateTestModeError = "Invalid test mode (should be property, assertion, dapptest, optimization, overflow or exploration)"

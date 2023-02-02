@@ -38,15 +38,13 @@ ppTx pn (Tx c s r g gp v (t, b)) = let sOf = ppTxCall in do
                  ++ (if b == 0    then "" else " Block delay: " ++ show (toInteger b))
 
 -- | Pretty-print the coverage a 'Campaign' has obtained.
-ppCoverage :: CoverageMap -> Maybe String
-ppCoverage s | s == mempty = Nothing
-             | otherwise   = Just $ "Unique instructions: " ++ show (scoveragePoints s)
-                                 ++ "\nUnique codehashes: " ++ show (length s)
+ppCoverage :: CoverageMap -> String
+ppCoverage s = "Unique instructions: " ++ show (scoveragePoints s)
+               ++ "\nUnique codehashes: " ++ show (length s)
 
 -- | Pretty-print the corpus a 'Campaign' has obtained.
-ppCorpus :: Corpus -> Maybe String
-ppCorpus c | c == mempty = Nothing
-           | otherwise   = Just $ "Corpus size: " ++ show (corpusSize c)
+ppCorpus :: Corpus -> String
+ppCorpus c = "Corpus size: " ++ show (corpusSize c)
 
 -- | Pretty-print the gas usage for a function.
 ppGasOne :: MonadReader EConfig m => (Text, (Int, [Tx])) -> m String
@@ -122,8 +120,8 @@ ppCampaign :: MonadReader EConfig m => Campaign -> m String
 ppCampaign c = do
   testsPrinted <- ppTests c
   gasInfoPrinted <- ppGasInfo c
-  let coveragePrinted = maybe "" ("\n" ++) . ppCoverage $ c._coverage
-      corpusPrinted = maybe "" ("\n" ++) . ppCorpus $ c._corpus
+  let coveragePrinted = ppCoverage c._coverage
+      corpusPrinted = ppCorpus c._corpus
       seedPrinted = "\nSeed: " ++ show c._genDict._defSeed
   pure $
     testsPrinted

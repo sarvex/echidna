@@ -264,9 +264,8 @@ campaign u vm w ts d txs = do
   let effectiveSeed = fromMaybe d'._defSeed conf._seed
       effectiveGenDict = d' { _defSeed = effectiveSeed }
       d' = fromMaybe defaultDict d
-  execStateT
-    (evalRandT runCampaign (mkStdGen effectiveSeed))
-    (Campaign ts c mempty effectiveGenDict False DS.empty 0 (memo vm._env._contracts))
+      camp = Campaign ts c mempty effectiveGenDict False DS.empty 0 (memo vm._env._contracts)
+  execStateT (evalRandT (lift u >> runCampaign) (mkStdGen effectiveSeed)) camp
   where
     -- "mapMaybe ..." is to get a list of all contracts
     memo = makeBytecodeMemo . mapMaybe (viewBuffer . (^. bytecode)) . elems

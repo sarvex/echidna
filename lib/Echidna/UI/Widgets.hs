@@ -21,8 +21,17 @@ import Echidna.Types.Test
 import Echidna.Types.Tx (Tx(..), TxResult(..))
 import Echidna.UI.Report
 import Echidna.Types.Config
+import Data.Map (Map)
+import EVM.Types (Addr, W256)
+import EVM (Contract)
 
-data UIState = Uninitialized | Running | Timedout
+data UIStateStatus = Uninitialized | Running | Timedout
+data UIState = UIState
+  { status :: UIStateStatus
+  , campaign :: Campaign
+  , fetchedContracts :: Map Addr Contract
+  , fetchedSlots :: Map Addr (Map W256 W256)
+  }
 
 attrs :: A.AttrMap
 attrs = A.attrMap (V.white `on` V.black)
@@ -34,47 +43,63 @@ attrs = A.attrMap (V.white `on` V.black)
   , (attrName "success", fg V.brightGreen)
   ]
 
+bold :: Widget n -> Widget n
+bold = withAttr (attrName "bold")
+
 data Name =
   TestsViewPort
   | SBClick ClickableScrollbarElement Name
   deriving (Ord, Show, Eq)
 
 -- | Render 'Campaign' progress as a 'Widget'.
-campaignStatus :: MonadReader EConfig m
-               => (Campaign, UIState) -> m (Widget Name)
-campaignStatus (c@Campaign{_tests, _coverage, _ncallseqs}, uiState) = do
-  done <- isDone c
-  case (uiState, done) of
+campaignStatus :: MonadReader EConfig m => UIState -> m (Widget Name)
+campaignStatus uiState = do
+  done <- isDone uiState.campaign
+  case (uiState.status, done) of
     (Uninitialized, _) -> pure $ mainbox (padLeft (Pad 1) $ str "Starting up, please wait...") emptyWidget
-    (Timedout, _)      -> mainbox <$> testsWidget _tests <*> pure (str "Timed out, C-c or esc to exit")
-    (_, True)          -> mainbox <$> testsWidget _tests <*> pure (str "Campaign complete, C-c or esc to exit")
-    _                  -> mainbox <$> testsWidget _tests <*> pure emptyWidget
+    (Timedout, _) ->
+      mainbox <$> testsWidget uiState.campaign._tests
+              <*> pure (finalStatus "Timed out, C-c or esc to exit")
+    (_, True) ->
+      mainbox <$> testsWidget uiState.campaign._tests
+              <*> pure (finalStatus "Campaign complete, C-c or esc to exit")
+    _ ->
+      mainbox <$> testsWidget uiState.campaign._tests
+              <*> pure emptyWidget
   where
     mainbox :: Widget Name -> Widget Name -> Widget Name
     mainbox inner underneath =
-      padTop (Pad 1) $ hCenter $ hLimit 120 $
-      wrapInner inner
-      <=>
-      hCenter underneath
-    wrapInner inner =
-      borderWithLabel (withAttr (attrName "bold") $ str title) $
-      summaryWidget c
-      <=>
-      hBorderWithLabel (str "Tests")
-      <=>
-      inner
+      hCenter $ hLimit 120 $
+        wrapInner inner underneath
+    wrapInner inner underneath =
+      joinBorders $ borderWithLabel (bold $ str title) $
+        vLimit 5 (hLimitPercent 50 (summaryWidget uiState.campaign) <+> vBorder <+> hLimitPercent 50 (fetchCacheWidget uiState.fetchedContracts uiState.fetchedSlots))
+        <=>
+        hBorderWithLabel (str "Tests")
+        <=>
+        inner
+        <=>
+        underneath
     title = "Echidna " ++ showVersion Paths_echidna.version
+    finalStatus s = hBorder <=> hCenter (bold $ str s)
 
 summaryWidget :: Campaign -> Widget Name
 summaryWidget c =
-  padLeft (Pad 1) (
-      str ("Tests found: " ++ show (length c._tests)) <=>
-      str ("Seed: " ++ show c._genDict._defSeed)
+  padLeft (Pad 1) $
+    vLimit 1 (str "Tests found: " <+> str (show (length c._tests)) <+> fill ' ')
     <=>
-    maybe emptyWidget str (ppCoverage c._coverage)
+    str ("Seed: " ++ show c._genDict._defSeed)
     <=>
-    maybe emptyWidget str (ppCorpus c._corpus)
-  )
+    str (ppCoverage c._coverage)
+    <=>
+    str (ppCorpus c._corpus)
+
+fetchCacheWidget :: Map Addr Contract -> Map Addr (Map W256 W256) -> Widget Name
+fetchCacheWidget contracts slots =
+  padLeft (Pad 1) $
+    str ("Fetched contracts: " <> show (length contracts))
+    <=>
+    str ("Fetched slots: " <> show (sum $ length <$> slots))
 
 failedFirst :: EchidnaTest -> EchidnaTest -> Ordering
 failedFirst t1 _ | didFailed t1 = LT
@@ -104,7 +129,7 @@ testWidget etest =
     pure $ padLeft (Pad 1) $
       str infront <+> name n <+> str ": " <+> status
       <=> padTop (Pad 1) details
-  name n = withAttr (attrName "bold") $ str (T.unpack n)
+  name n = bold $ str (T.unpack n)
 
 tsWidget :: MonadReader EConfig m
          => TestState -> EchidnaTest -> m (Widget Name, Widget Name)

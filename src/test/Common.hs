@@ -88,7 +88,9 @@ runContract f mc cfg = do
   let dappInfo' = dappInfo "/" solcByName sc
   cacheContracts <- newIORef mempty
   cacheSlots <- newIORef mempty
-  let env = Env { cfg = cfg, dapp = dappInfo', fetchCacheContracts = cacheContracts, fetchCacheSlots = cacheSlots }
+  let env = Env { cfg = cfg, dapp = dappInfo'
+                , fetchContractCache = cacheContracts
+                , fetchSlotCache = cacheSlots }
   -- start ui and run tests
   runReaderT (campaign (pure ()) v w ts (Just d) txs) env
 
@@ -113,7 +115,9 @@ checkConstructorConditions fp as = testCase fp $ do
   -- TODO:
   cacheContracts <- newIORef mempty
   cacheSlots <- newIORef mempty
-  let env = Env { cfg = testConfig, dapp = emptyDapp, fetchCacheContracts = cacheContracts, fetchCacheSlots = cacheSlots }
+  let env = Env { cfg = testConfig, dapp = emptyDapp
+                , fetchContractCache = cacheContracts
+                , fetchSlotCache = cacheSlots }
   r <- flip runReaderT env $
     mapM (\u -> evalStateT (checkETest u) v) t
   mapM_ (\(x,_) -> assertBool as (forceBool x)) r

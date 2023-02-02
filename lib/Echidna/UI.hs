@@ -6,10 +6,11 @@ import Control.Concurrent (killThread, threadDelay)
 import Control.Monad (forever, void, when)
 import Control.Monad.Catch (MonadCatch(..))
 import Control.Monad.IO.Class (MonadIO(..))
-import Control.Monad.Reader (MonadReader, runReader, asks)
+import Control.Monad.Reader (MonadReader (ask), runReader, asks)
 import Control.Monad.Random.Strict (MonadRandom)
 import Data.ByteString.Lazy qualified as BS
 import Data.IORef
+import Data.Map (Map)
 import Data.Maybe (fromMaybe)
 import Graphics.Vty qualified as V
 import Graphics.Vty (Config, Event(..), Key(..), Modifier(..), defaultConfig, inputMap, mkVty)
@@ -19,7 +20,8 @@ import UnliftIO (MonadUnliftIO)
 import UnliftIO.Concurrent (forkIO, forkFinally)
 import UnliftIO.Timeout (timeout)
 
-import EVM (VM)
+import EVM (VM, Contract)
+import EVM.Types (Addr, W256)
 
 import Echidna.ABI
 import Echidna.Campaign (campaign)
@@ -31,8 +33,12 @@ import Echidna.Types.World (World)
 import Echidna.UI.Report
 import Echidna.UI.Widgets
 import Echidna.Types.Config
+import Control.Monad.State (modify')
 
-data CampaignEvent = CampaignUpdated Campaign | CampaignTimedout Campaign
+data UIEvent
+  = CampaignUpdated Campaign
+  | CampaignTimedout Campaign
+  | FetchCacheUpdated (Map Addr Contract) (Map Addr (Map W256 W256))
 
 -- | Set up and run an Echidna 'Campaign' and display interactive UI or
 -- print non-interactive output in desired format at the end
@@ -59,8 +65,15 @@ ui vm world ts d txs = do
     Interactive -> do
       bc <- liftIO $ newBChan 100
       let updateUI e = readIORef ref >>= writeBChan bc . e
-      ticker <- liftIO $ forkIO $ -- run UI update every 100ms
-        forever $ threadDelay 100000 >> updateUI CampaignUpdated
+      env <- ask
+      ticker <- liftIO $ forkIO $
+        -- run UI update every 100ms
+        forever $ do
+          threadDelay 100000
+          updateUI CampaignUpdated
+          c <- readIORef env.fetchContractCache
+          s <- readIORef env.fetchSlotCache
+          writeBChan bc (FetchCacheUpdated c s)
       _ <- forkFinally -- run worker
         (void $ runCampaign >>= \case
           Nothing -> liftIO $ updateUI CampaignTimedout
@@ -73,7 +86,10 @@ ui vm world ts d txs = do
             pure v
       initialVty <- liftIO buildVty
       app <- customMain initialVty buildVty (Just bc) <$> monitor
-      liftIO $ void $ app (defaultCampaign, Uninitialized)
+      liftIO $ void $ app UIState { campaign = defaultCampaign
+                                  , status = Uninitialized
+                                  , fetchedContracts = mempty
+                                  , fetchedSlots = mempty }
       final <- liftIO $ readIORef ref
       liftIO . putStrLn $ runReader (ppCampaign final) conf
       pure final
@@ -105,13 +121,17 @@ vtyConfig = do
               }
 
 -- | Check if we should stop drawing (or updating) the dashboard, then do the right thing.
-monitor :: MonadReader Env m => m (App (Campaign, UIState) CampaignEvent Name)
+monitor :: MonadReader Env m => m (App UIState UIEvent Name)
 monitor = do
-  let drawUI :: EConfig -> (Campaign, UIState) -> [Widget Name]
+  let drawUI :: EConfig -> UIState -> [Widget Name]
       drawUI conf camp = [runReader (campaignStatus camp) conf]
 
-      onEvent (AppEvent (CampaignUpdated c')) = put (c', Running)
-      onEvent (AppEvent (CampaignTimedout c')) = put (c', Timedout)
+      onEvent (AppEvent (CampaignUpdated c')) =
+        modify' $ \state -> state { campaign = c', status = Running }
+      onEvent (AppEvent (CampaignTimedout c')) =
+        modify' $ \state -> state { campaign = c', status = Timedout }
+      onEvent (AppEvent (FetchCacheUpdated contracts slots)) =
+        modify' $ \state -> state { fetchedContracts = contracts, fetchedSlots = slots }
       onEvent (VtyEvent (EvKey KEsc _))                         = halt
       onEvent (VtyEvent (EvKey (KChar 'c') l)) | MCtrl `elem` l = halt
       onEvent (MouseDown (SBClick el n) _ _ _) =
