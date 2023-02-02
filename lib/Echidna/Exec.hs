@@ -8,7 +8,7 @@ import Control.Lens
 import Control.Monad.Catch (MonadThrow(..))
 import Control.Monad.State.Strict (MonadState(get, put), execState, runStateT, MonadIO(liftIO))
 import Control.Monad.Reader (MonadReader, asks)
-import Data.IORef (readIORef, atomicWriteIORef)
+import Data.IORef (readIORef, atomicWriteIORef, modifyIORef')
 import Data.Map qualified as M
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
@@ -34,7 +34,9 @@ import Echidna.Types.Coverage (CoverageMap)
 import Echidna.Types.Signature (BytecodeMemo, lookupBytecodeMetadata)
 import Echidna.Types.Tx (TxCall(..), Tx, TxResult(..), call, dst, initialTimestamp, initialBlockNumber)
 import Echidna.Types.Config (Env(..), EConfig(..), UIConf(..), OperationMode (..), OutputFormat (Text))
+import Echidna.Types.Solidity (SolConf(..))
 import Control.Monad (when)
+import qualified Data.Set as Set
 
 -- | Broad categories of execution failures: reversions, illegal operations, and ???.
 data ErrorClass = RevertE | IllegalE | UnknownE
@@ -101,9 +103,7 @@ execTxWith l onErr executeTx tx = do
         case Map.lookup addr cache of
           Just contract -> l %= execState (continuation contract)
           Nothing -> do
-            -- TODO: temporary
-            operationMode <- asks (.cfg._uConf.operationMode)
-            when (operationMode == NonInteractive Text) $ liftIO $ print q
+            logMsg $ "INFO: Performing RPC: " <> show q
             getRpcUrl >>= \case
               Just rpcUrl -> do
                 rpcBlock <- getRpcBlock
@@ -113,10 +113,14 @@ execTxWith l onErr executeTx tx = do
                     l %= execState (continuation contract)
                     liftIO $ atomicWriteIORef cacheRef $ Map.insert addr contract cache
                   Nothing -> do
-                   -- TODO: How should we fail here? It could be a network error,
+                    logMsg $ "ERROR: Failed to fetch contract: " <> show q
+                    errorsRef <- asks (.fetchContractErrors)
+                    liftIO $ modifyIORef' errorsRef (Set.insert addr)
+                    -- TODO: How should we fail here? It could be a network error,
                     -- RPC server returning junk etc.
                     l %= execState (continuation emptyAccount)
-              Nothing ->
+              Nothing -> do
+                logMsg $ "ERROR: Requested RPC but it is not configured: " <> show q
                 -- TODO: How should we fail here? RPC is not configured but VM
                 -- wants to fetch
                 l %= execState (continuation emptyAccount)
@@ -129,9 +133,7 @@ execTxWith l onErr executeTx tx = do
         case Map.lookup addr cache >>= Map.lookup slot of
           Just value -> l %= execState (continuation value)
           Nothing -> do
-            -- TODO: temporary
-            operationMode <- asks (.cfg._uConf.operationMode)
-            when (operationMode == NonInteractive Text) $ liftIO $ print q
+            logMsg $ "INFO: Performing RPC: " <> show q
             getRpcUrl >>= \case
               Just rpcUrl -> do
                 rpcBlock <- getRpcBlock
@@ -145,7 +147,8 @@ execTxWith l onErr executeTx tx = do
                     -- TODO: How should we fail here? It could be a network error,
                     -- RPC server returning junk etc.
                     l %= execState (continuation 0)
-              Nothing ->
+              Nothing -> do
+                logMsg $ "ERROR: Requested RPC but it is not configured: " <> show q
                 -- Use the zero slot
                 l %= execState (continuation 0)
         runFully -- resume execution
@@ -198,6 +201,14 @@ execTxWith l onErr executeTx tx = do
         replaceCodeOfSelf (RuntimeCode (ConcreteRuntimeCode bytecode'))
         loadContract tx.dst)
     _ -> pure ()
+
+
+logMsg :: (MonadIO m, MonadReader Env m) => String -> m ()
+logMsg msg = do
+  cfg <- asks (.cfg)
+  operationMode <- asks (.cfg._uConf.operationMode)
+  when (operationMode == NonInteractive Text && not cfg._sConf._quiet) $
+    liftIO $ putStrLn msg
 
 -- | Execute a transaction "as normal".
 execTx :: (MonadIO m, MonadState VM m, MonadReader Env m, MonadThrow m) => Tx -> m (VMResult, Int)

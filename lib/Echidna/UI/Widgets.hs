@@ -27,12 +27,15 @@ import EVM (Contract)
 import qualified Brick.Widgets.Dialog as B
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
+import Data.Set (Set)
+import qualified Data.Set as Set
 
 data UIStateStatus = Uninitialized | Running | Timedout
 data UIState = UIState
   { status :: UIStateStatus
   , campaign :: Campaign
   , fetchedContracts :: Map Addr Contract
+  , fetchedContractsErrors :: Set Addr
   , fetchedSlots :: Map Addr (Map W256 W256)
   , fetchedDialog :: B.Dialog ()
   , displayFetchedDialog :: Bool
@@ -110,6 +113,8 @@ fetchedDialogWidget :: UIState -> Widget n
 fetchedDialogWidget uiState =
   B.renderDialog uiState.fetchedDialog $ padLeftRight 1 $
     foldl (<=>) emptyWidget (Map.mapWithKey renderContract uiState.fetchedContracts)
+    <=>
+    str "Failed fetches:"
   where
   renderContract addr _code =
     bold (str (show addr))

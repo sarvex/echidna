@@ -90,7 +90,7 @@ updateTest vmForShrink (vm, xs) test = do
   tl <- asks (.cfg._cConf._testLimit)
   dappInfo <- asks (.dapp)
   case test.testState of
-    Open i | i >= tl -> case test.testType of
+    Open i | i > tl -> case test.testType of
       OptimizationTest _ _ -> pure $ test { testState = Large (-1) }
       _                    -> pure $ test { testState = Passed }
     Open i -> do
@@ -276,11 +276,11 @@ campaign u vm w ts d txs = do
       Campaign{_ncallseqs} <- get
       if | _stopOnFail && any (\case Solved -> True; Failed _ -> True; _ -> False) c ->
            lift u
-         | any (\case Open  n   -> n < _testLimit; _ -> False) c ->
+         | any (\case Open  n   -> n <= _testLimit; _ -> False) c ->
            callseq ic vm w _seqLen >> step
          | any (\case Large n   -> n < _shrinkLimit; _ -> False) c ->
            step
-         | null c && (_seqLen * _ncallseqs) < _testLimit ->
+         | null c && (_seqLen * _ncallseqs) <= _testLimit ->
            callseq ic vm w _seqLen >> step
          | otherwise ->
            lift u
