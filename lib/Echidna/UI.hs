@@ -34,6 +34,7 @@ import Echidna.UI.Report
 import Echidna.UI.Widgets
 import Echidna.Types.Config
 import Control.Monad.State (modify')
+import qualified Brick.Widgets.Dialog as B
 
 data UIEvent
   = CampaignUpdated Campaign
@@ -86,10 +87,14 @@ ui vm world ts d txs = do
             pure v
       initialVty <- liftIO buildVty
       app <- customMain initialVty buildVty (Just bc) <$> monitor
-      liftIO $ void $ app UIState { campaign = defaultCampaign
-                                  , status = Uninitialized
-                                  , fetchedContracts = mempty
-                                  , fetchedSlots = mempty }
+      liftIO $ void $ app UIState
+        { campaign = defaultCampaign
+        , status = Uninitialized
+        , fetchedContracts = mempty
+        , fetchedSlots = mempty
+        , fetchedDialog = B.dialog (Just "Fetched contracts/slots") Nothing 80
+        , displayFetchedDialog = False
+        }
       final <- liftIO $ readIORef ref
       liftIO . putStrLn $ runReader (ppCampaign final) conf
       pure final
@@ -124,7 +129,11 @@ vtyConfig = do
 monitor :: MonadReader Env m => m (App UIState UIEvent Name)
 monitor = do
   let drawUI :: EConfig -> UIState -> [Widget Name]
-      drawUI conf camp = [runReader (campaignStatus camp) conf]
+      drawUI conf uiState =
+        [ if uiState.displayFetchedDialog
+             then fetchedDialogWidget uiState
+             else emptyWidget
+        , runReader (campaignStatus uiState) conf]
 
       onEvent (AppEvent (CampaignUpdated c')) =
         modify' $ \state -> state { campaign = c', status = Running }
@@ -132,6 +141,8 @@ monitor = do
         modify' $ \state -> state { campaign = c', status = Timedout }
       onEvent (AppEvent (FetchCacheUpdated contracts slots)) =
         modify' $ \state -> state { fetchedContracts = contracts, fetchedSlots = slots }
+      onEvent (VtyEvent (EvKey (KChar 'f') _)) =
+        modify' $ \state -> state { displayFetchedDialog = not state.displayFetchedDialog }
       onEvent (VtyEvent (EvKey KEsc _))                         = halt
       onEvent (VtyEvent (EvKey (KChar 'c') l)) | MCtrl `elem` l = halt
       onEvent (MouseDown (SBClick el n) _ _ _) =

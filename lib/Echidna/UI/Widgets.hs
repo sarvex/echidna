@@ -24,6 +24,9 @@ import Echidna.Types.Config
 import Data.Map (Map)
 import EVM.Types (Addr, W256)
 import EVM (Contract)
+import qualified Brick.Widgets.Dialog as B
+import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
 
 data UIStateStatus = Uninitialized | Running | Timedout
 data UIState = UIState
@@ -31,6 +34,8 @@ data UIState = UIState
   , campaign :: Campaign
   , fetchedContracts :: Map Addr Contract
   , fetchedSlots :: Map Addr (Map W256 W256)
+  , fetchedDialog :: B.Dialog ()
+  , displayFetchedDialog :: Bool
   }
 
 attrs :: A.AttrMap
@@ -100,6 +105,22 @@ fetchCacheWidget contracts slots =
     str ("Fetched contracts: " <> show (length contracts))
     <=>
     str ("Fetched slots: " <> show (sum $ length <$> slots))
+
+fetchedDialogWidget :: UIState -> Widget n
+fetchedDialogWidget uiState =
+  B.renderDialog uiState.fetchedDialog $ padLeftRight 1 $
+    foldl (<=>) emptyWidget (Map.mapWithKey renderContract uiState.fetchedContracts)
+  where
+  renderContract addr _code =
+    bold (str (show addr))
+    <=>
+    renderSlots addr
+  renderSlots addr =
+    foldl (<=>) emptyWidget $
+      Map.mapWithKey renderSlot (fromMaybe mempty $ Map.lookup addr uiState.fetchedSlots)
+  renderSlot slot value =
+    padLeft (Pad 1) $ str (show slot <> " => " <> show value)
+
 
 failedFirst :: EchidnaTest -> EchidnaTest -> Ordering
 failedFirst t1 _ | didFailed t1 = LT
