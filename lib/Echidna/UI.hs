@@ -35,12 +35,11 @@ import Echidna.UI.Widgets
 import Echidna.Types.Config
 import Control.Monad.State (modify')
 import qualified Brick.Widgets.Dialog as B
-import Data.Set (Set)
 
 data UIEvent
   = CampaignUpdated Campaign
   | CampaignTimedout Campaign
-  | FetchCacheUpdated (Map Addr Contract) (Set Addr) (Map Addr (Map W256 W256))
+  | FetchCacheUpdated (Map Addr (Maybe Contract)) (Map Addr (Map W256 (Maybe W256)))
 
 -- | Set up and run an Echidna 'Campaign' and display interactive UI or
 -- print non-interactive output in desired format at the end
@@ -74,9 +73,8 @@ ui vm world ts d txs = do
           threadDelay 100000
           updateUI CampaignUpdated
           c <- readIORef env.fetchContractCache
-          e <- readIORef env.fetchContractErrors
           s <- readIORef env.fetchSlotCache
-          writeBChan bc (FetchCacheUpdated c e s)
+          writeBChan bc (FetchCacheUpdated c s)
       _ <- forkFinally -- run worker
         (void $ runCampaign >>= \case
           Nothing -> liftIO $ updateUI CampaignTimedout
@@ -93,7 +91,6 @@ ui vm world ts d txs = do
         { campaign = defaultCampaign
         , status = Uninitialized
         , fetchedContracts = mempty
-        , fetchedContractsErrors = mempty
         , fetchedSlots = mempty
         , fetchedDialog = B.dialog (Just "Fetched contracts/slots") Nothing 80
         , displayFetchedDialog = False
@@ -142,9 +139,8 @@ monitor = do
         modify' $ \state -> state { campaign = c', status = Running }
       onEvent (AppEvent (CampaignTimedout c')) =
         modify' $ \state -> state { campaign = c', status = Timedout }
-      onEvent (AppEvent (FetchCacheUpdated contracts errors slots)) =
+      onEvent (AppEvent (FetchCacheUpdated contracts slots)) =
         modify' $ \state -> state { fetchedContracts = contracts
-                                  , fetchedContractsErrors = errors
                                   , fetchedSlots = slots }
       onEvent (VtyEvent (EvKey (KChar 'f') _)) =
         modify' $ \state -> state { displayFetchedDialog = not state.displayFetchedDialog }

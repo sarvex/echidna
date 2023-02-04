@@ -26,17 +26,14 @@ import EVM.Types (Addr, W256)
 import EVM (Contract)
 import qualified Brick.Widgets.Dialog as B
 import qualified Data.Map as Map
-import Data.Maybe (fromMaybe)
-import Data.Set (Set)
-import qualified Data.Set as Set
+import Data.Maybe (fromMaybe, isJust)
 
 data UIStateStatus = Uninitialized | Running | Timedout
 data UIState = UIState
   { status :: UIStateStatus
   , campaign :: Campaign
-  , fetchedContracts :: Map Addr Contract
-  , fetchedContractsErrors :: Set Addr
-  , fetchedSlots :: Map Addr (Map W256 W256)
+  , fetchedContracts :: Map Addr (Maybe Contract)
+  , fetchedSlots :: Map Addr (Map W256 (Maybe W256))
   , fetchedDialog :: B.Dialog ()
   , displayFetchedDialog :: Bool
   }
@@ -53,6 +50,9 @@ attrs = A.attrMap (V.white `on` V.black)
 
 bold :: Widget n -> Widget n
 bold = withAttr (attrName "bold")
+
+failure :: Widget n -> Widget n
+failure = withAttr (attrName "failure")
 
 data Name =
   TestsViewPort
@@ -81,7 +81,7 @@ campaignStatus uiState = do
         wrapInner inner underneath
     wrapInner inner underneath =
       joinBorders $ borderWithLabel (bold $ str title) $
-        vLimit 5 (hLimitPercent 50 (summaryWidget uiState.campaign) <+> vBorder <+> hLimitPercent 50 (fetchCacheWidget uiState.fetchedContracts uiState.fetchedSlots))
+        summaryWidget uiState
         <=>
         hBorderWithLabel (str "Tests")
         <=>
@@ -91,40 +91,52 @@ campaignStatus uiState = do
     title = "Echidna " ++ showVersion Paths_echidna.version
     finalStatus s = hBorder <=> hCenter (bold $ str s)
 
-summaryWidget :: Campaign -> Widget Name
-summaryWidget c =
-  padLeft (Pad 1) $
-    vLimit 1 (str "Tests found: " <+> str (show (length c._tests)) <+> fill ' ')
-    <=>
-    str ("Seed: " ++ show c._genDict._defSeed)
-    <=>
-    str (ppCoverage c._coverage)
-    <=>
-    str (ppCorpus c._corpus)
+summaryWidget :: UIState -> Widget Name
+summaryWidget uiState =
+  vLimit 5 (hLimitPercent 50 leftSide <+> vBorder <+> hLimitPercent 50 rightSide)
+  where
+  leftSide =
+    let c = uiState.campaign in
+    padLeft (Pad 1) $
+      vLimit 1 (str "Tests found: " <+> str (show (length c._tests)) <+> fill ' ')
+      <=>
+      str ("Seed: " ++ show c._genDict._defSeed)
+      <=>
+      str (ppCoverage c._coverage)
+      <=>
+      str (ppCorpus c._corpus)
+  rightSide = fetchCacheWidget uiState.fetchedContracts uiState.fetchedSlots
 
-fetchCacheWidget :: Map Addr Contract -> Map Addr (Map W256 W256) -> Widget Name
+fetchCacheWidget
+  :: Map Addr (Maybe Contract) -> Map Addr (Map W256 (Maybe W256)) -> Widget Name
 fetchCacheWidget contracts slots =
   padLeft (Pad 1) $
-    str ("Fetched contracts: " <> show (length contracts))
+    str ("Fetched contracts: " <> contractCount)
     <=>
     str ("Fetched slots: " <> show (sum $ length <$> slots))
+  where
+    contractCount =
+      let successful = Map.filter isJust contracts
+      in show (length successful) <> "/" <> show (length contracts)
 
 fetchedDialogWidget :: UIState -> Widget n
 fetchedDialogWidget uiState =
   B.renderDialog uiState.fetchedDialog $ padLeftRight 1 $
     foldl (<=>) emptyWidget (Map.mapWithKey renderContract uiState.fetchedContracts)
-    <=>
-    str "Failed fetches:"
   where
-  renderContract addr _code =
+  renderContract addr (Just _code) =
     bold (str (show addr))
     <=>
     renderSlots addr
+  renderContract addr Nothing =
+    bold $ failure (str (show addr))
   renderSlots addr =
     foldl (<=>) emptyWidget $
       Map.mapWithKey renderSlot (fromMaybe mempty $ Map.lookup addr uiState.fetchedSlots)
-  renderSlot slot value =
+  renderSlot slot (Just value) =
     padLeft (Pad 1) $ str (show slot <> " => " <> show value)
+  renderSlot slot Nothing =
+    padLeft (Pad 1) $ failure $ str (show slot)
 
 
 failedFirst :: EchidnaTest -> EchidnaTest -> Ordering

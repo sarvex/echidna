@@ -289,4 +289,4 @@ campaign u vm w ts d txs = do
     updateMetadataCache = do
       cacheRef <- asks (.fetchContractCache)
       cache <- liftIO $ readIORef cacheRef
-      bcMemo %= Map.union (memo cache)
+      bcMemo %= Map.union (memo (Map.mapMaybe id cache))

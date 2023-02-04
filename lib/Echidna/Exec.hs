@@ -5,10 +5,11 @@
 module Echidna.Exec where
 
 import Control.Lens
+import Control.Monad (when)
 import Control.Monad.Catch (MonadThrow(..))
 import Control.Monad.State.Strict (MonadState(get, put), execState, runStateT, MonadIO(liftIO))
 import Control.Monad.Reader (MonadReader, asks)
-import Data.IORef (readIORef, atomicWriteIORef, modifyIORef')
+import Data.IORef (readIORef, atomicWriteIORef)
 import Data.Map qualified as M
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
@@ -33,10 +34,8 @@ import Echidna.Types.Buffer (viewBuffer)
 import Echidna.Types.Coverage (CoverageMap)
 import Echidna.Types.Signature (BytecodeMemo, lookupBytecodeMetadata)
 import Echidna.Types.Tx (TxCall(..), Tx, TxResult(..), call, dst, initialTimestamp, initialBlockNumber)
-import Echidna.Types.Config (Env(..), EConfig(..), UIConf(..), OperationMode (..), OutputFormat (Text))
+import Echidna.Types.Config (Env(..), EConfig(..), UIConf(..), OperationMode(..), OutputFormat(Text))
 import Echidna.Types.Solidity (SolConf(..))
-import Control.Monad (when)
-import qualified Data.Set as Set
 
 -- | Broad categories of execution failures: reversions, illegal operations, and ???.
 data ErrorClass = RevertE | IllegalE | UnknownE
@@ -101,7 +100,9 @@ execTxWith l onErr executeTx tx = do
         cacheRef <- asks (.fetchContractCache)
         cache <- liftIO $ readIORef cacheRef
         case Map.lookup addr cache of
-          Just contract -> l %= execState (continuation contract)
+          Just (Just contract) -> l %= execState (continuation contract)
+          Just Nothing ->
+            l %= execState (continuation emptyAccount)
           Nothing -> do
             logMsg $ "INFO: Performing RPC: " <> show q
             getRpcUrl >>= \case
@@ -109,17 +110,20 @@ execTxWith l onErr executeTx tx = do
                 rpcBlock <- getRpcBlock
                 ret <- liftIO $ EVM.Fetch.fetchContractFrom rpcBlock rpcUrl addr
                 case ret of
-                  Just contract -> do
+                  -- TODO: fix hevm to not return an empty contract in case of an error
+                  Just contract | contract._contractcode /= EVM.RuntimeCode (EVM.ConcreteRuntimeCode "")-> do
                     l %= execState (continuation contract)
-                    liftIO $ atomicWriteIORef cacheRef $ Map.insert addr contract cache
-                  Nothing -> do
+                    liftIO $ atomicWriteIORef cacheRef $ Map.insert addr (Just contract) cache
+                  _ -> do
+                    -- TODO: better error reporting in HEVM, when intermmittent
+                    -- network eror then retry
+                    liftIO $ atomicWriteIORef cacheRef $ Map.insert addr Nothing cache
                     logMsg $ "ERROR: Failed to fetch contract: " <> show q
-                    errorsRef <- asks (.fetchContractErrors)
-                    liftIO $ modifyIORef' errorsRef (Set.insert addr)
                     -- TODO: How should we fail here? It could be a network error,
                     -- RPC server returning junk etc.
                     l %= execState (continuation emptyAccount)
               Nothing -> do
+                liftIO $ atomicWriteIORef cacheRef $ Map.insert addr Nothing cache
                 logMsg $ "ERROR: Requested RPC but it is not configured: " <> show q
                 -- TODO: How should we fail here? RPC is not configured but VM
                 -- wants to fetch
@@ -131,7 +135,8 @@ execTxWith l onErr executeTx tx = do
         cacheRef <- asks (.fetchSlotCache)
         cache <- liftIO $ readIORef cacheRef
         case Map.lookup addr cache >>= Map.lookup slot of
-          Just value -> l %= execState (continuation value)
+          Just (Just value) -> l %= execState (continuation value)
+          Just Nothing -> l %= execState (continuation 0)
           Nothing -> do
             logMsg $ "INFO: Performing RPC: " <> show q
             getRpcUrl >>= \case
@@ -142,10 +147,13 @@ execTxWith l onErr executeTx tx = do
                   Just value -> do
                     l %= execState (continuation value)
                     liftIO $ atomicWriteIORef cacheRef $
-                      Map.insertWith Map.union addr (Map.singleton slot value) cache
-                  Nothing ->
+                      Map.insertWith Map.union addr (Map.singleton slot (Just value)) cache
+                  Nothing -> do
                     -- TODO: How should we fail here? It could be a network error,
                     -- RPC server returning junk etc.
+                    logMsg $ "ERROR: Failed to fetch slot: " <> show q
+                    liftIO $ atomicWriteIORef cacheRef $
+                      Map.insertWith Map.union addr (Map.singleton slot Nothing) cache
                     l %= execState (continuation 0)
               Nothing -> do
                 logMsg $ "ERROR: Requested RPC but it is not configured: " <> show q

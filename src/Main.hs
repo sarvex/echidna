@@ -52,12 +52,10 @@ main = do
   -- TODO put in real path
   let dappInfo' = dappInfo "/" solcByName sc
   cacheContracts <- newIORef mempty
-  fetchContractErrors <- newIORef mempty
   cacheSlots <- newIORef mempty
   let env = Env { cfg = cfg
                 , dapp = dappInfo'
                 , fetchContractCache = cacheContracts
-                , fetchContractErrors = fetchContractErrors
                 , fetchSlotCache = cacheSlots }
   -- start ui and run tests
   cpg <- runReaderT (ui v w ts (Just d) txs) env

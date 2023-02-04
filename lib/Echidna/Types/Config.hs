@@ -16,7 +16,6 @@ import EVM.Types (Addr, W256)
 import Data.IORef (IORef)
 import Data.Map (Map)
 import EVM (Contract)
-import Data.Set (Set)
 
 data OperationMode = Interactive | NonInteractive OutputFormat deriving (Show, Eq)
 data OutputFormat = Text | JSON | None deriving (Show, Eq)
@@ -58,7 +57,6 @@ data Env = Env
   { cfg :: EConfig
   , dapp :: DappInfo
 
-  , fetchContractCache :: IORef (Map Addr Contract)
-  , fetchContractErrors :: IORef (Set Addr)
-  , fetchSlotCache :: IORef (Map Addr (Map W256 W256))
+  , fetchContractCache :: IORef (Map Addr (Maybe Contract))
+  , fetchSlotCache :: IORef (Map Addr (Map W256 (Maybe W256)))
   }
