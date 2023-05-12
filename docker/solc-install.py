@@ -13,8 +13,7 @@ if len(sys.argv) < 2:
     print(f"Usage: {sys.argv[0]} other-program [args..]")
     sys.exit(1)
 
-solc_version = os.getenv('SOLC_VERSION', None)
-if solc_version:
+if solc_version := os.getenv('SOLC_VERSION', None):
     silent = os.getenv("SOLC_SELECT_SILENT", "1") == "1" and subprocess.DEVNULL or None
     subprocess.run(['solc-select', 'install', solc_version], stderr=silent, stdout=silent)
     subprocess.run(['solc-select', 'use', solc_version], stderr=silent, stdout=silent)
